@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react'
 import {
   Truck, MapPin, Route, Clock, CloudRain, Wind,
@@ -251,8 +250,6 @@ function App() {
   const [isSaving, setIsSaving] = useState(false)
   const [hasLiveRoutes, setHasLiveRoutes] = useState(false)
   const [recommendedRouteId, setRecommendedRouteId] = useState(null)
-
-  // Admin dropdown state
   const [adminOpen, setAdminOpen] = useState(false)
 
   useEffect(() => {
@@ -306,7 +303,11 @@ function App() {
     setIsSaving(true)
 
     try {
-      const response = await fetch('http://127.0.0.1:8001/api/trips/', {
+      const API_BASE_URL = (
+        import.meta.env.VITE_API_URL || 'http://127.0.0.1:8001'
+      ).replace(/\/$/, '')
+
+      const response = await fetch(`${API_BASE_URL}/api/trips/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -417,7 +418,6 @@ function App() {
 
   return (
     <div className="dashboard">
-
       <header className="top-nav">
         <div className="brand">
           <div className="brand-symbol">
@@ -437,23 +437,14 @@ function App() {
         <div className="nav-right">
           <span className="system-online"><i /> SYSTEM ONLINE</span>
 
-          <button
-            type="button"
-            className="nav-icon"
-            aria-label="Notifications"
-          >
+          <button type="button" className="nav-icon" aria-label="Notifications">
             <Bell size={18} />
           </button>
 
-          <button
-            type="button"
-            className="nav-icon"
-            aria-label="Settings"
-          >
+          <button type="button" className="nav-icon" aria-label="Settings">
             <Settings size={18} />
           </button>
 
-          {/* ADMIN DROPDOWN */}
           <div className="admin-menu">
             <button
               type="button"
@@ -462,7 +453,6 @@ function App() {
               onClick={() => setAdminOpen(prev => !prev)}
             >
               <div className="admin-avatar">SA</div>
-
               <span className="admin-name">
                 Admin
                 <ChevronDown
@@ -479,17 +469,11 @@ function App() {
                   <small>Administrator account</small>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setAdminOpen(false)}
-                >
+                <button type="button" onClick={() => setAdminOpen(false)}>
                   My Profile
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setAdminOpen(false)}
-                >
+                <button type="button" onClick={() => setAdminOpen(false)}>
                   Account Settings
                 </button>
 
@@ -509,7 +493,6 @@ function App() {
       </header>
 
       <main id="dashboard">
-
         <section className="toolbar">
           <div className="toolbar-title">
             <span className="orange-mark" /> ROUTE OPERATIONS
@@ -537,7 +520,6 @@ function App() {
 
         <section className="trip-bar">
           <form onSubmit={generateRoutes} className="trip-form">
-
             <div className="trip-field">
               <label><MapPin size={13} /> ORIGIN</label>
               <input
@@ -587,7 +569,6 @@ function App() {
         </section>
 
         <section className="kpi-grid" id="analytics">
-
           <div className="kpi-card">
             <div className="kpi-icon orange-icon"><Route /></div>
             <div>
@@ -644,13 +625,10 @@ function App() {
               <span>{hasLiveRoutes ? 'Route risk analysis' : 'Demo preview'}</span>
             </div>
           </div>
-
         </section>
 
         <section className="operations-grid" id="routes">
-
           <aside className="routes-column">
-
             <div className="column-heading">
               <div>
                 <h2>Routes</h2>
@@ -728,11 +706,9 @@ function App() {
                 </p>
               </div>
             </div>
-
           </aside>
 
           <section className="map-column">
-
             <div className="map-heading">
               <div>
                 <h2>Route map</h2>
@@ -746,7 +722,6 @@ function App() {
             </div>
 
             <div className="map-stage">
-
               <MapContainer
                 key={`${hasLiveRoutes ? active.id : 'demo'}-${origin}-${destination}`}
                 center={
@@ -849,7 +824,6 @@ function App() {
                     )}
                   </>
                 )}
-
               </MapContainer>
 
               <div className="map-overlay-tag">
@@ -864,7 +838,6 @@ function App() {
                   </span>
                 ))}
               </div>
-
             </div>
 
             <div className="map-footer">
@@ -873,11 +846,9 @@ function App() {
               <span><MapPin size={14} /> {destination}</span>
               <span className="map-footer-distance">{active.distance}</span>
             </div>
-
           </section>
 
           <aside className="details-column">
-
             <div className="details-heading">
               <div>
                 <small>SELECTED ROUTE</small>
@@ -959,12 +930,10 @@ function App() {
                 </p>
               </div>
             </div>
-
           </aside>
         </section>
 
         <section className="weather-panel" id="weather">
-
           <div className="weather-title">
             <div>
               <h2><CloudRain size={18} /> Weather intelligence</h2>
@@ -1048,14 +1017,12 @@ function App() {
                 ? 'Weather data is unavailable or pending for this route.'
                 : 'Demo weather preview. Generate a trip to load route data.'}
           </p>
-
         </section>
 
         <footer className="footer">
           <span>SPOTTER AI · WEATHER-AWARE TRUCK ROUTING</span>
           <span>FULL STACK DEVELOPER ASSESSMENT</span>
         </footer>
-
       </main>
     </div>
   )
