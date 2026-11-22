@@ -1,17 +1,22 @@
-
 import json
 import urllib.parse
 import urllib.request
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
+RISK_RANKING = {
+    "Low": 0,
+    "Moderate": 1,
+    "High": 2,
+    "Severe": 3,
+    "No Travel": 4,
+}
 
-def get_weather(latitude, longitude, checkpoint_time):
-    """Fetch hourly weather forecast for a route checkpoint."""
 
+def fetch_weather_data(latitude, longitude):
     params = urllib.parse.urlencode({
         "latitude": latitude,
         "longitude": longitude,
@@ -33,51 +38,64 @@ def get_weather(latitude, longitude, checkpoint_time):
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             data = json.loads(response.read().decode("utf-8"))
-
     except Exception as error:
-        raise RuntimeError(
-            f"Weather API request failed: {error}"
-        )
+        raise RuntimeError(f"Weather API request failed: {error}")
 
     if "hourly" not in data:
         raise RuntimeError("Weather API returned no hourly forecast.")
 
-    hourly = data["hourly"]
+    return data["hourly"]
 
-    required_fields = [
+
+def normalize_time(value):
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def weather_at_index(hourly, index):
+    wind = hourly["wind_speed_10m"][index] or 0
+    rain = hourly["precipitation"][index] or 0
+    snow_cm = hourly["snowfall"][index] or 0
+
+    return {
+        "time": hourly["time"][index],
+        "wind_mph": round(float(wind), 2),
+        "rain_inches": round(float(rain), 3),
+        "snow_inches": round(float(snow_cm) / 2.54, 3),
+    }
+
+
+def get_weather(latitude, longitude, checkpoint_time):
+    """Get weather nearest to the truck's estimated checkpoint arrival."""
+
+    hourly = fetch_weather_data(latitude, longitude)
+
+    required = [
         "time",
         "precipitation",
         "snowfall",
         "wind_speed_10m",
     ]
 
-    for field in required_fields:
+    for field in required:
         if field not in hourly or not hourly[field]:
-            raise RuntimeError(
-                f"Missing weather forecast field: {field}"
-            )
+            raise RuntimeError(f"Missing weather forecast field: {field}")
 
-    # Convert checkpoint time to UTC.
-    if checkpoint_time.tzinfo is None:
-        checkpoint_time = checkpoint_time.replace(
-            tzinfo=timezone.utc
-        )
-
-    target = checkpoint_time.astimezone(
-        timezone.utc
-    ).replace(tzinfo=None)
+    target = normalize_time(checkpoint_time)
 
     forecast_times = [
-        datetime.fromisoformat(value)
+        normalize_time(value)
         for value in hourly["time"]
     ]
 
-    # Find the nearest hourly forecast.
     index = min(
         range(len(forecast_times)),
-        key=lambda i: abs(
-            (forecast_times[i] - target).total_seconds()
-        ),
+        key=lambda i: abs((forecast_times[i] - target).total_seconds()),
     )
 
     difference = abs(
@@ -89,29 +107,57 @@ def get_weather(latitude, longitude, checkpoint_time):
             "No suitable hourly forecast for this checkpoint time."
         )
 
-    wind = hourly["wind_speed_10m"][index] or 0
-    rain = hourly["precipitation"][index] or 0
+    return weather_at_index(hourly, index)
 
-    # Open-Meteo snowfall is returned in centimetres by default.
-    snow_cm = hourly["snowfall"][index] or 0
-    snow_inches = snow_cm / 2.54
 
-    return {
-        "time": hourly["time"][index],
-        "wind_mph": round(float(wind), 2),
-        "rain_inches": round(float(rain), 3),
-        "snow_inches": round(float(snow_inches), 3),
-    }
+def get_weather_forecast(latitude, longitude, checkpoint_time):
+    """Return hourly forecast from checkpoint ETA through the next 48 hours."""
+
+    hourly = fetch_weather_data(latitude, longitude)
+
+    required = [
+        "time",
+        "precipitation",
+        "snowfall",
+        "wind_speed_10m",
+    ]
+
+    for field in required:
+        if field not in hourly or not hourly[field]:
+            raise RuntimeError(f"Missing weather forecast field: {field}")
+
+    target = normalize_time(checkpoint_time)
+
+    forecast_times = [
+        normalize_time(value)
+        for value in hourly["time"]
+    ]
+
+    start_index = min(
+        range(len(forecast_times)),
+        key=lambda i: abs((forecast_times[i] - target).total_seconds()),
+    )
+
+    forecasts = []
+
+    for offset in range(49):
+        index = start_index + offset
+
+        if index >= len(forecast_times):
+            break
+
+        weather = weather_at_index(hourly, index)
+        weather["forecast_hour"] = offset
+        forecasts.append(weather)
+
+    return forecasts
 
 
 def classify_weather(weather, load_weight):
-    """Calculate weather risk using truck safety thresholds."""
-
     wind = float(weather.get("wind_mph", 0))
     rain = float(weather.get("rain_inches", 0))
     snow = float(weather.get("snow_inches", 0))
 
-    # Wind risk
     if wind >= 55:
         wind_risk = "No Travel"
     elif wind >= 45:
@@ -123,7 +169,6 @@ def classify_weather(weather, load_weight):
     else:
         wind_risk = "Low"
 
-    # Rain risk
     if rain > 1.0:
         rain_risk = "No Travel"
     elif rain >= 0.50:
@@ -135,7 +180,6 @@ def classify_weather(weather, load_weight):
     else:
         rain_risk = "Low"
 
-    # Snow risk
     if snow > 3.0:
         snow_risk = "No Travel"
     elif snow >= 2.0:
@@ -147,30 +191,17 @@ def classify_weather(weather, load_weight):
     else:
         snow_risk = "Low"
 
-    risks = [
-        wind_risk,
-        rain_risk,
-        snow_risk,
-    ]
+    risks = [wind_risk, rain_risk, snow_risk]
 
-    # Truck load safety adjustments
     if 45 <= wind < 55 and load_weight > 30000:
         risks.append("No Travel")
 
     if 35 <= wind < 45 and load_weight > 40000:
         risks.append("Severe")
 
-    ranking = {
-        "Low": 0,
-        "Moderate": 1,
-        "High": 2,
-        "Severe": 3,
-        "No Travel": 4,
-    }
-
     overall_risk = max(
         risks,
-        key=lambda risk: ranking[risk]
+        key=lambda risk: RISK_RANKING[risk],
     )
 
     return {

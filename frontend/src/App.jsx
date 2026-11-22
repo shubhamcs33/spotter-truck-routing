@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Truck, MapPin, Route, Clock, CloudRain, Wind,
   ShieldCheck, Gauge, Bell, Settings, Search,
@@ -8,7 +8,8 @@ import {
 } from 'lucide-react'
 
 import {
-  MapContainer, TileLayer, Polyline, CircleMarker, Popup
+  MapContainer, TileLayer, Polyline,
+  CircleMarker, Circle, Popup
 } from 'react-leaflet'
 
 import 'leaflet/dist/leaflet.css'
@@ -98,10 +99,36 @@ function normalizeRisk(value) {
   return String(value)
 }
 
-function normalizeCheckpoint(cp, index) {
-  const weather = cp.weather || {}
+function getRiskColor(risk) {
+  const level = String(risk || 'Pending').toLowerCase()
+
+  if (level === 'low') return '#22c55e'
+  if (level === 'moderate') return '#facc15'
+  if (level === 'high') return '#f97316'
+  if (level === 'severe') return '#ef4444'
+  if (level === 'no travel') return '#991b1b'
+
+  return '#94a3b8'
+}
+
+function normalizeCheckpoint(cp, index, forecastHour = 0) {
+  const forecastList = Array.isArray(cp.weather_forecast)
+    ? cp.weather_forecast
+    : []
+
+  const selectedForecast =
+    forecastList.find(
+      item => Number(item.forecast_hour) === Number(forecastHour)
+    ) || forecastList[forecastHour] || null
+
+  const weather = selectedForecast || cp.weather || {}
+
   const risk = normalizeRisk(
-    cp.risk || cp.weather_risk || cp.risk_level
+    selectedForecast?.risk ||
+    selectedForecast?.weather_risk ||
+    cp.risk ||
+    cp.weather_risk ||
+    cp.risk_level
   )
 
   const latitude = cp.latitude ?? cp.lat
@@ -109,31 +136,32 @@ function normalizeCheckpoint(cp, index) {
 
   return {
     name: cp.name || `Checkpoint ${index + 1}`,
+
     time: cp.time
       ? new Date(cp.time).toLocaleTimeString([], {
           hour: '2-digit',
           minute: '2-digit'
         })
       : '—',
+
     distance: cp.distance_miles != null
       ? `${Number(cp.distance_miles).toFixed(1)} mi`
       : '—',
+
     wind: weather.wind_mph != null
-      ? `${weather.wind_mph} mph`
-      : cp.wind_mph != null
-        ? `${cp.wind_mph} mph`
-        : '—',
+      ? `${Number(weather.wind_mph).toFixed(1)} mph`
+      : '—',
+
     rain: weather.rain_inches != null
-      ? `${weather.rain_inches} in`
-      : cp.rain_inches != null
-        ? `${cp.rain_inches} in`
-        : '—',
+      ? `${Number(weather.rain_inches).toFixed(3)} in/hr`
+      : '—',
+
     snow: weather.snow_inches != null
-      ? `${weather.snow_inches} in`
-      : cp.snow_inches != null
-        ? `${cp.snow_inches} in`
-        : '—',
+      ? `${Number(weather.snow_inches).toFixed(3)} in/hr`
+      : '—',
+
     risk,
+
     position: latitude != null && longitude != null
       ? [Number(latitude), Number(longitude)]
       : cp.position || null
@@ -166,6 +194,7 @@ function buildCheckpoints(route, intervalMiles, departureValue) {
   for (let i = 1; i <= count; i += 1) {
     const travelled = i * interval
     const fraction = totalMiles ? travelled / totalMiles : 0
+
     const pointIndex = Math.min(
       points.length - 1,
       Math.round(fraction * (points.length - 1))
@@ -215,13 +244,16 @@ function App() {
   const [origin, setOrigin] = useState('Denver, CO')
   const [destination, setDestination] = useState('Kansas City, MO')
   const [weight, setWeight] = useState('35000')
-  const [departure, setDeparture] = useState('2026-11-22T08:00')
+  const [departure, setDeparture] = useState('2026-11-22T18:00')
   const [forecast, setForecast] = useState(0)
   const [interval, setInterval] = useState('25')
   const [notice, setNotice] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [hasLiveRoutes, setHasLiveRoutes] = useState(false)
   const [recommendedRouteId, setRecommendedRouteId] = useState(null)
+
+  // Admin dropdown state
+  const [adminOpen, setAdminOpen] = useState(false)
 
   useEffect(() => {
     const saved = localStorage.getItem('spotterLastTrip')
@@ -235,10 +267,10 @@ function App() {
       setOrigin(data.origin || 'Denver, CO')
       setDestination(data.destination || 'Kansas City, MO')
       setWeight(data.weight || '35000')
-      setDeparture(data.departure || '2026-11-22T08:00')
+      setDeparture(data.departure || '2026-11-22T18:00')
       setInterval(data.interval || '25')
       setRouteData(data.routes)
-      setSelected(data.routes[0].id)
+      setSelected(data.recommendedRouteId || data.routes[0].id)
       setRecommendedRouteId(data.recommendedRouteId || null)
       setHasLiveRoutes(true)
       setNotice(`Trip #${data.tripId} restored successfully.`)
@@ -251,7 +283,9 @@ function App() {
   const active = routeData.find(r => r.id === selected) || routeData[0]
 
   const stops = hasLiveRoutes && active?.checkpoints?.length
-    ? active.checkpoints.map(normalizeCheckpoint)
+    ? active.checkpoints.map((cp, index) =>
+        normalizeCheckpoint(cp, index, forecast)
+      )
     : hasLiveRoutes
       ? buildCheckpoints(active, interval, departure)
       : demoStops
@@ -331,8 +365,8 @@ function App() {
           duration: formatDuration(route.duration_seconds),
           status: risk,
           color: colors[index % colors.length],
-          severe: route.severe_miles ?? route.risk_miles?.severe ?? '—',
-          high: route.high_miles ?? route.risk_miles?.high ?? '—',
+          severe: route.severe_miles ?? route.risk_miles?.Severe ?? '—',
+          high: route.high_miles ?? route.risk_miles?.High ?? '—',
           risk,
           coordinates: route.coordinates || [],
           checkpoints
@@ -344,6 +378,7 @@ function App() {
       setRouteData(liveRoutes)
       setRecommendedRouteId(recommendedId)
       setSelected(recommendedId || liveRoutes[0].id)
+      setForecast(0)
       setHasLiveRoutes(true)
 
       localStorage.setItem('spotterLastTrip', JSON.stringify({
@@ -358,7 +393,9 @@ function App() {
       }))
 
       const weatherAvailable = liveRoutes.some(
-        route => route.checkpoints.some(cp => cp.weather)
+        route => route.checkpoints.some(
+          cp => cp.weather || cp.weather_forecast?.length
+        )
       )
 
       setNotice(
@@ -399,10 +436,75 @@ function App() {
 
         <div className="nav-right">
           <span className="system-online"><i /> SYSTEM ONLINE</span>
-          <button className="nav-icon"><Bell size={18} /></button>
-          <button className="nav-icon"><Settings size={18} /></button>
-          <div className="admin-avatar">SA</div>
-          <span className="admin-name">Admin <ChevronDown size={13} /></span>
+
+          <button
+            type="button"
+            className="nav-icon"
+            aria-label="Notifications"
+          >
+            <Bell size={18} />
+          </button>
+
+          <button
+            type="button"
+            className="nav-icon"
+            aria-label="Settings"
+          >
+            <Settings size={18} />
+          </button>
+
+          {/* ADMIN DROPDOWN */}
+          <div className="admin-menu">
+            <button
+              type="button"
+              className="admin-trigger"
+              aria-expanded={adminOpen}
+              onClick={() => setAdminOpen(prev => !prev)}
+            >
+              <div className="admin-avatar">SA</div>
+
+              <span className="admin-name">
+                Admin
+                <ChevronDown
+                  size={13}
+                  className={adminOpen ? 'admin-chevron-open' : ''}
+                />
+              </span>
+            </button>
+
+            {adminOpen && (
+              <div className="admin-dropdown">
+                <div className="admin-dropdown-header">
+                  <strong>Admin</strong>
+                  <small>Administrator account</small>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setAdminOpen(false)}
+                >
+                  My Profile
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAdminOpen(false)}
+                >
+                  Account Settings
+                </button>
+
+                <div className="admin-dropdown-divider" />
+
+                <button
+                  type="button"
+                  className="admin-logout"
+                  onClick={() => setAdminOpen(false)}
+                >
+                  Sign Out
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -415,6 +517,7 @@ function App() {
 
           <div className="toolbar-right">
             <span className="demo-label">ASSESSMENT PREVIEW</span>
+
             <button
               className="reoptimize"
               onClick={() => {
@@ -423,6 +526,7 @@ function App() {
                 setSelected('alpha')
                 setRecommendedRouteId(null)
                 setHasLiveRoutes(false)
+                setForecast(0)
                 localStorage.removeItem('spotterLastTrip')
               }}
             >
@@ -552,14 +656,20 @@ function App() {
                 <h2>Routes</h2>
                 <p>{routeData.length} available options</p>
               </div>
-              <button className="nav-icon"><Settings size={17} /></button>
+
+              <button className="nav-icon">
+                <Settings size={17} />
+              </button>
             </div>
 
             <div className="route-cards">
               {routeData.map(route => (
                 <button
                   key={route.id}
-                  onClick={() => setSelected(route.id)}
+                  onClick={() => {
+                    setSelected(route.id)
+                    setForecast(0)
+                  }}
                   className={`route-item ${selected === route.id ? 'route-selected' : ''}`}
                   style={{ '--route-color': route.color }}
                 >
@@ -584,10 +694,12 @@ function App() {
                       <strong>{route.severe}</strong>
                       <small>Severe mi</small>
                     </div>
+
                     <div>
                       <strong>{route.high}</strong>
                       <small>High mi</small>
                     </div>
+
                     <div>
                       <strong>{route.duration}</strong>
                       <small>Duration</small>
@@ -641,7 +753,7 @@ function App() {
                   active.coordinates[Math.floor(active.coordinates.length / 2)] ||
                   [39.7, -99.7]
                 }
-                zoom={4}
+                zoom={hasLiveRoutes ? 8 : 4}
                 scrollWheelZoom={true}
                 className="ops-map"
               >
@@ -691,22 +803,48 @@ function App() {
                       <Popup>Destination: {destination}</Popup>
                     </CircleMarker>
 
-                    {hasLiveRoutes && stops.slice(1, -1).map((stop, index) =>
+                    {hasLiveRoutes && stops.map((stop, index) =>
                       stop.position ? (
-                        <CircleMarker
-                          key={`${stop.name}-${index}`}
-                          center={stop.position}
-                          radius={4}
-                          pathOptions={{
-                            color: '#fff',
-                            fillColor: '#fbbf24',
-                            fillOpacity: 1
-                          }}
-                        >
-                          <Popup>
-                            {stop.name} · {stop.distance}
-                          </Popup>
-                        </CircleMarker>
+                        <React.Fragment key={`${stop.name}-${index}`}>
+                          <Circle
+                            center={stop.position}
+                            radius={18000}
+                            pathOptions={{
+                              color: getRiskColor(stop.risk),
+                              fillColor: getRiskColor(stop.risk),
+                              fillOpacity: 0.18,
+                              weight: 1,
+                              opacity: 0.45
+                            }}
+                          />
+
+                          <CircleMarker
+                            center={stop.position}
+                            radius={7}
+                            pathOptions={{
+                              color: '#ffffff',
+                              weight: 2,
+                              fillColor: getRiskColor(stop.risk),
+                              fillOpacity: 0.95
+                            }}
+                          >
+                            <Popup>
+                              <strong>{stop.name}</strong>
+                              <br />
+                              Forecast: +{forecast} hours
+                              <br />
+                              Distance: {stop.distance}
+                              <br />
+                              Risk: {stop.risk}
+                              <br />
+                              Wind: {stop.wind}
+                              <br />
+                              Rain: {stop.rain}
+                              <br />
+                              Snow: {stop.snow}
+                            </Popup>
+                          </CircleMarker>
+                        </React.Fragment>
                       ) : null
                     )}
                   </>
@@ -745,6 +883,7 @@ function App() {
                 <small>SELECTED ROUTE</small>
                 <h2>{active.name}</h2>
               </div>
+
               <span className={`route-status ${riskClass(active.risk)}`}>
                 {active.risk}
               </span>
@@ -783,18 +922,22 @@ function App() {
                 <span><Route size={14} /> Distance</span>
                 <strong>{active.distance}</strong>
               </div>
+
               <div>
                 <span><Clock size={14} /> Duration</span>
                 <strong>{active.duration}</strong>
               </div>
+
               <div>
                 <span><AlertTriangle size={14} /> Severe miles</span>
                 <strong>{active.severe}</strong>
               </div>
+
               <div>
                 <span><Zap size={14} /> High-risk miles</span>
                 <strong>{active.high}</strong>
               </div>
+
               <div>
                 <span><Truck size={14} /> Truck load</span>
                 <strong>{Number(weight || 0).toLocaleString()} lb</strong>
@@ -807,8 +950,10 @@ function App() {
                 <strong>Route assessment</strong>
                 <p>
                   {hasLiveRoutes
-                    ? active.checkpoints?.some(cp => cp.weather)
-                      ? 'Road route and weather checkpoint data received from backend services.'
+                    ? active.checkpoints?.some(
+                        cp => cp.weather || cp.weather_forecast?.length
+                      )
+                      ? 'Road route and weather checkpoint forecast data received from backend services.'
                       : 'Road geometry is live. Weather checkpoint data was not returned for this route.'
                     : 'Demo preview data. Generate a trip to load real driving routes.'}
                 </p>
@@ -845,18 +990,20 @@ function App() {
 
           <div className="forecast-bar">
             <div>
-              <Clock size={15} /> Forecast <strong>{forecast}h</strong>
+              <Clock size={15} />
+              Forecast <strong>+{forecast}h</strong>
             </div>
 
             <input
               type="range"
               min="0"
               max="48"
+              step="1"
               value={forecast}
               onChange={e => setForecast(Number(e.target.value))}
             />
 
-            <span>48 hours</span>
+            <span>+48 hours</span>
           </div>
 
           <div className="weather-grid">
@@ -880,7 +1027,7 @@ function App() {
 
                 <div className="weather-value">
                   <CloudRain size={17} />
-                  <strong>{stop.snow || '—'}</strong>
+                  <strong>{stop.snow}</strong>
                 </div>
                 <small>Snowfall</small>
 
@@ -893,8 +1040,10 @@ function App() {
 
           <p className="sample-warning">
             <AlertTriangle size={14} />
-            {hasLiveRoutes && active.checkpoints?.some(cp => cp.weather)
-              ? 'Weather data received from the forecast provider.'
+            {hasLiveRoutes && active.checkpoints?.some(
+              cp => cp.weather || cp.weather_forecast?.length
+            )
+              ? `Weather forecast displayed for +${forecast} hours.`
               : hasLiveRoutes
                 ? 'Weather data is unavailable or pending for this route.'
                 : 'Demo weather preview. Generate a trip to load route data.'}

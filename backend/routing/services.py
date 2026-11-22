@@ -5,7 +5,12 @@ import urllib.parse
 import urllib.request
 
 from datetime import timedelta
-from .weather import get_weather, classify_weather
+
+from .weather import (
+    get_weather,
+    get_weather_forecast,
+    classify_weather,
+)
 
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -25,7 +30,9 @@ def fetch_json(url):
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
     except Exception as error:
-        raise RuntimeError(f"External API request failed: {error}")
+        raise RuntimeError(
+            f"External API request failed: {error}"
+        )
 
 
 def geocode_location(place):
@@ -51,38 +58,150 @@ def get_route_options(origin, destination):
     start = geocode_location(origin)
     end = geocode_location(destination)
 
-    coordinates = (
-        f'{start["longitude"]},{start["latitude"]};'
-        f'{end["longitude"]},{end["latitude"]}'
-    )
+    start_point = [
+        start["longitude"],
+        start["latitude"],
+    ]
+
+    end_point = [
+        end["longitude"],
+        end["latitude"],
+    ]
 
     params = urllib.parse.urlencode({
-        "alternatives": "3",
+        "alternatives": "true",
         "overview": "full",
         "geometries": "geojson",
         "steps": "true",
         "continue_straight": "false",
     })
 
-    data = fetch_json(f"{OSRM_URL}/{coordinates}?{params}")
+    direct_coordinates = (
+        f"{start_point[0]},{start_point[1]};"
+        f"{end_point[0]},{end_point[1]}"
+    )
+
+    data = fetch_json(
+        f"{OSRM_URL}/{direct_coordinates}?{params}"
+    )
 
     if data.get("code") != "Ok" or not data.get("routes"):
         raise RuntimeError("No driving routes were found.")
 
-    routes = []
+    candidate_routes = list(data["routes"])
 
-    for index, route in enumerate(data["routes"]):
+    # Try different intermediate waypoints to find
+    # additional genuine driving paths.
+    mid_lat = (
+        start_point[1] + end_point[1]
+    ) / 2
+
+    mid_lon = (
+        start_point[0] + end_point[0]
+    ) / 2
+
+    dx = (
+        (end_point[0] - start_point[0])
+        * math.cos(math.radians(mid_lat))
+    )
+
+    dy = end_point[1] - start_point[1]
+
+    length = math.sqrt(dx * dx + dy * dy)
+
+    if length > 0:
+        perp_x = -dy / length
+        perp_y = dx / length
+
+        for offset_km in (8, -8, 15, -15, 25, -25):
+            offset_lon = (
+                perp_x * offset_km
+                / (
+                    111
+                    * math.cos(math.radians(mid_lat))
+                )
+            )
+
+            offset_lat = perp_y * offset_km / 111
+
+            waypoint = [
+                mid_lon + offset_lon,
+                mid_lat + offset_lat,
+            ]
+
+            route_coordinates = (
+                f"{start_point[0]},{start_point[1]};"
+                f"{waypoint[0]},{waypoint[1]};"
+                f"{end_point[0]},{end_point[1]}"
+            )
+
+            waypoint_params = urllib.parse.urlencode({
+                "alternatives": "false",
+                "overview": "full",
+                "geometries": "geojson",
+                "steps": "true",
+                "continue_straight": "false",
+            })
+
+            try:
+                waypoint_data = fetch_json(
+                    f"{OSRM_URL}/{route_coordinates}?"
+                    f"{waypoint_params}"
+                )
+
+                if (
+                    waypoint_data.get("code") == "Ok"
+                    and waypoint_data.get("routes")
+                ):
+                    candidate_routes.append(
+                        waypoint_data["routes"][0]
+                    )
+
+            except Exception:
+                continue
+
+    routes = []
+    seen_paths = set()
+
+    for route in candidate_routes:
         geometry = route["geometry"]["coordinates"]
 
+        if len(geometry) < 2:
+            continue
+
+        sample_indices = [
+            round(i * (len(geometry) - 1) / 7)
+            for i in range(8)
+        ]
+
+        signature = tuple(
+            (
+                round(geometry[i][0], 3),
+                round(geometry[i][1], 3),
+            )
+            for i in sample_indices
+        )
+
+        if signature in seen_paths:
+            continue
+
+        seen_paths.add(signature)
+
+        route_number = len(routes) + 1
+
         routes.append({
-            "id": f"route-{index + 1}",
-            "name": f"Route {index + 1}",
+            "id": f"route-{route_number}",
+            "name": f"Route {route_number}",
             "distance_miles": round(
-                route["distance"] / 1609.344, 2
+                route["distance"] / 1609.344,
+                2,
             ),
-            "duration_seconds": round(route["duration"]),
+            "duration_seconds": round(
+                route["duration"]
+            ),
             "duration_hours": round(
-                route["duration"] / 3600, 2
+                route["duration"] / 3600,
+                2,
             ),
             "coordinates": [
                 [latitude, longitude]
@@ -91,6 +210,14 @@ def get_route_options(origin, destination):
             "geometry": geometry,
         })
 
+        if len(routes) == 3:
+            break
+
+    if not routes:
+        raise RuntimeError(
+            "No valid driving routes were found."
+        )
+
     return {
         "origin": start,
         "destination": end,
@@ -98,8 +225,8 @@ def get_route_options(origin, destination):
         "routes": routes,
         "route_provider": "OSRM",
         "route_message": (
-            f"{len(routes)} available route option(s) returned. "
-            "The routing provider may return fewer than three."
+            f"{len(routes)} distinct driving route "
+            "option(s) returned."
         ),
     }
 
@@ -113,9 +240,12 @@ def haversine_miles(point_a, point_b):
 
     value = (
         math.sin(dlat / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2)
+        + math.cos(lat1)
+        * math.cos(lat2)
         * math.sin(dlon / 2) ** 2
     )
+
+    value = max(0, min(1, value))
 
     return 3958.8 * 2 * math.atan2(
         math.sqrt(value),
@@ -124,13 +254,19 @@ def haversine_miles(point_a, point_b):
 
 
 def coordinate_at_distance(geometry, target_miles):
+    if not geometry:
+        raise ValueError("Route geometry is empty.")
+
     travelled = 0.0
 
     for index in range(1, len(geometry)):
         previous = geometry[index - 1]
         current = geometry[index]
 
-        segment = haversine_miles(previous, current)
+        segment = haversine_miles(
+            previous,
+            current,
+        )
 
         if travelled + segment >= target_miles:
             fraction = (
@@ -173,6 +309,11 @@ def enrich_routes_with_weather(
         duration = route["duration_seconds"]
         geometry = route["geometry"]
 
+        if distance <= 0:
+            raise ValueError(
+                "Route distance must be greater than zero."
+            )
+
         checkpoints = []
 
         risk_miles = {
@@ -195,9 +336,13 @@ def enrich_routes_with_weather(
         distances.append(distance)
 
         previous_distance = 0.0
+        weighted_risk_total = 0.0
 
-        for number, travelled in enumerate(distances, start=1):
-            fraction = travelled / distance if distance else 0
+        for number, travelled in enumerate(
+            distances,
+            start=1,
+        ):
+            fraction = travelled / distance
 
             checkpoint_time = departure_time + timedelta(
                 seconds=duration * fraction
@@ -214,7 +359,10 @@ def enrich_routes_with_weather(
                     if travelled >= distance
                     else f"Checkpoint {number}"
                 ),
-                "distance_miles": round(travelled, 2),
+                "distance_miles": round(
+                    travelled,
+                    2,
+                ),
                 "latitude": latitude,
                 "longitude": longitude,
                 "time": checkpoint_time.isoformat(),
@@ -227,30 +375,56 @@ def enrich_routes_with_weather(
                     checkpoint_time,
                 )
 
-                risk = classify_weather(weather, load_weight)
+                risk = classify_weather(
+                    weather,
+                    load_weight,
+                )
+
+                forecast_data = get_weather_forecast(
+                    latitude,
+                    longitude,
+                    checkpoint_time,
+                )
+
+                for forecast_item in forecast_data:
+                    forecast_item["risk"] = classify_weather(
+                        forecast_item,
+                        load_weight,
+                    )
 
                 checkpoint["weather"] = weather
                 checkpoint["risk"] = risk
+                checkpoint["weather_forecast"] = forecast_data
 
                 level = risk["level"]
 
+                if level not in ranking:
+                    level = "Pending"
+
             except Exception as error:
                 checkpoint["weather"] = None
+
                 checkpoint["risk"] = {
                     "level": "Pending",
                     "error": str(error),
                 }
 
+                checkpoint["weather_forecast"] = []
+
                 level = "Pending"
 
             segment_miles = max(
                 0,
-                travelled - previous_distance
+                travelled - previous_distance,
             )
 
             risk_miles[level] += segment_miles
-            previous_distance = travelled
 
+            weighted_risk_total += (
+                ranking[level] * segment_miles
+            )
+
+            previous_distance = travelled
             checkpoints.append(checkpoint)
 
         levels = [
@@ -260,7 +434,11 @@ def enrich_routes_with_weather(
 
         overall = max(
             levels,
-            key=lambda item: ranking[item]
+            key=lambda item: ranking.get(item, 5),
+        )
+
+        average_risk = (
+            weighted_risk_total / distance
         )
 
         route["checkpoints"] = checkpoints
@@ -272,17 +450,33 @@ def enrich_routes_with_weather(
         }
 
         route["severe_miles"] = round(
-            risk_miles["Severe"] + risk_miles["No Travel"],
-            2
+            risk_miles["Severe"]
+            + risk_miles["No Travel"],
+            2,
         )
 
         route["high_miles"] = round(
-            risk_miles["High"], 2
+            risk_miles["High"],
+            2,
         )
 
+        route["no_travel_miles"] = round(
+            risk_miles["No Travel"],
+            2,
+        )
+
+        route["average_risk_score"] = round(
+            average_risk,
+            2,
+        )
+
+    # Rank routes by weather risk first,
+    # then by travel time.
     route_data["routes"].sort(
         key=lambda route: (
-            ranking[route["overall_risk"]],
+            route["severe_miles"],
+            route["high_miles"],
+            route["average_risk_score"],
             route["duration_seconds"],
         )
     )
